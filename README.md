@@ -22,5 +22,5 @@ Aplicación de demostración que captura telemetría GPS en tiempo real, la visu
 1. **Clonar el repositorio:**
 
    ```bash
-   git clone https://github.com/TU_USUARIO/telemetria_ia.git
+   git clone https://github.com/AdrianGuzmanGH/telemetria_ia.git
    cd telemetria_ia
