@@ -155,40 +155,6 @@ Si por error lo denegaste, ve a **Ajustes → Apps → telemetria_ia → Permiso
 
 ---
 
-## 📦 Generar APK (opcional)
-
-Si quieres instalar la app en un dispositivo sin necesidad de conectarlo por USB:
-
-```bash
-flutter build apk --release
-```
-
-El APK se genera en:
-
-```
-build/app/outputs/flutter-apk/app-release.apk
-```
-
-Cópialo al celular (por cable, Bluetooth, Google Drive, etc.), ábrelo y acepta instalar desde **fuentes desconocidas**.
-
-### APK dividido por arquitectura (recomendado)
-
-Para obtener APKs más pequeños:
-
-```bash
-flutter build apk --split-per-abi
-```
-
-Se generan tres archivos en `build/app/outputs/flutter-apk/`:
-
-| Archivo | Compatible con |
-|---|---|
-| `app-armeabi-v7a-release.apk` | Dispositivos Android antiguos (32 bits) |
-| `app-arm64-v8a-release.apk` | **Dispositivos modernos (recomendado)** |
-| `app-x86_64-release.apk` | Emuladores |
-
----
-
 ## 🧭 Cómo usar la aplicación
 
 ### 🛰️ Modo Telemetría real
@@ -288,106 +254,6 @@ git pull
 
 ---
 
-## 🔐 Permisos nativos
-
-### Android (`android/app/src/main/AndroidManifest.xml`)
-
-```xml
-<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
-<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-<uses-permission android:name="android.permission.INTERNET"/>
-```
-
-### iOS (`ios/Runner/Info.plist`)
-
-```xml
-<key>NSLocationWhenInUseUsageDescription</key>
-<string>Usamos tu ubicación para telemetría en tiempo real</string>
-<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-<string>Usamos tu ubicación para telemetría en segundo plano</string>
-```
-
----
-
-## 📁 Estructura del proyecto
-
-```
-telemetria_ia/
-├── android/                        # Configuración Android
-├── ios/                            # Configuración iOS
-├── lib/
-│   ├── main.dart                   # Punto de entrada
-│   ├── models/
-│   │   ├── telemetry_point.dart
-│   │   └── classification_result.dart
-│   ├── services/
-│   │   ├── ai_classifier.dart
-│   │   ├── location_service.dart
-│   │   ├── settings_service.dart
-│   │   └── simulation_service.dart
-│   ├── screens/
-│   │   ├── home_screen.dart
-│   │   ├── gps_screen.dart
-│   │   └── simulation_screen.dart
-│   └── widgets/
-│       └── telemetry_panel.dart
-├── docs/
-│   └── screenshots/                # Capturas de pantalla
-├── pubspec.yaml                    # Dependencias
-└── README.md
-```
-
----
-
-## 🧠 Arquitectura: ¿cómo funciona la IA?
-
-La app usa una **interfaz desacoplada** `AiClassifier`:
-
-```dart
-abstract class AiClassifier {
-  Future<void> load();
-  ClassificationResult classify(List<TelemetryPoint> window);
-  void dispose();
-}
-```
-
-### Implementación actual: `HeuristicClassifier`
-
-Usa una combinación de reglas y estadísticas:
-
-1. Si `accuracy > 30m` → **"Señal débil"**.
-2. Si `speed > 100 km/h` → **"Exceso de velocidad"**.
-3. Promedio móvil de las últimas 3 muestras → filtra ruido del GPS.
-4. Si promedio `< 3 km/h` → **"Detenido"**.
-5. Calcula aceleración entre las dos últimas muestras.
-6. `score = 0.4 × velocidad + 0.6 × aceleración` → **"Normal"** o **"Conducción agresiva"**.
-
-### Implementación futura: `TfliteClassifier`
-
-La misma interfaz se puede implementar con un modelo TensorFlow Lite entrenado con datos GPS reales:
-
-```dart
-class TfliteClassifier implements AiClassifier {
-  Interpreter? _interpreter;
-
-  @override
-  Future<void> load() async {
-    _interpreter = await Interpreter.fromAsset('assets/modelo_telemetria.tflite');
-  }
-
-  @override
-  ClassificationResult classify(List<TelemetryPoint> window) {
-    // Feed features: [lat, lng, speed, heading, accuracy]
-    // Output: [probabilidad_anomalia]
-    // ...
-  }
-}
-```
-
-**Sin cambios en la UI ni en los servicios.** Solo cambias la implementación y listo.
-
----
-
 ## 🗺️ Proveedor de mapas: OpenFreeMap
 
 Este proyecto usa **OpenFreeMap** para renderizar el mapa. ¿Por qué?
@@ -403,9 +269,10 @@ OpenFreeMap sirve **tiles vectoriales** con el estilo `liberty`, lo que da un ma
 
 ---
 
-## 👥 Autor
+## 👥 Autores
 
 - **Adrian Guzman** — [@AdrianGuzmanGH](https://github.com/AdrianGuzmanGH)
+- **Jaider Paredes**
 
 ---
 
