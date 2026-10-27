@@ -12,7 +12,7 @@ import '../services/ai_classifier.dart';
 import '../services/simulation_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/telemetry_panel.dart';
-/// Velocidad antes de entrar en modo agresivo.
+
 class SimulationScreen extends StatefulWidget {
   const SimulationScreen({super.key});
 
