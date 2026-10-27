@@ -4,7 +4,7 @@ import 'simulation_screen.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({super.key});
-
+/// Velocidad antes de entrar en modo agresivo.
   @override
   Widget build(BuildContext context) {
     return Scaffold(
