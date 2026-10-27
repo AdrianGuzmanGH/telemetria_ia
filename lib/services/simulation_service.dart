@@ -20,7 +20,7 @@ class SimulationService {
   static const double _aggressiveSpeed = 120;
 
   static const Duration _interval = Duration(seconds: 1);
-/// Velocidad antes de entrar en modo agresivo.
+
   Stream<Position> get stream => _controller.stream;
   double get speedKmh => _speedKmh;
   double get radiusMeters => _radiusMeters;
