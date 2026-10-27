@@ -18,7 +18,7 @@ class HeuristicClassifier implements AiClassifier {
   Future<void> load() async {
     await Future.delayed(const Duration(milliseconds: 200));
   }
-
+/// Velocidad antes de entrar en modo agresivo.
   @override
   ClassificationResult classify(List<TelemetryPoint> window) {
     if (window.isEmpty) return ClassificationResult.unknown;
