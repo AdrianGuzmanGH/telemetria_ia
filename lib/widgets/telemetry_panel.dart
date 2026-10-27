@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/classification_result.dart';
 import '../models/telemetry_point.dart';
-
+/// Velocidad antes de entrar en modo agresivo.
 class TelemetryPanel extends StatelessWidget {
   final TelemetryPoint? current;
   final ClassificationResult result;
