@@ -1,7 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Guarda y recupera la configuración de la simulación.
-/// Velocidad antes de entrar en modo agresivo.
+
 class SettingsService {
   static const _kSpeed = 'sim_speed';
   static const _kAggressive = 'sim_aggressive';
