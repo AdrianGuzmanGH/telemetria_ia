@@ -16,7 +16,7 @@ subprojects {
 subprojects {
     project.evaluationDependsOn(":app")
 }
-/// Velocidad antes de entrar en modo agresivo.
+
 tasks.register<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
