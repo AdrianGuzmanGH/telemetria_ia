@@ -27,7 +27,7 @@ class LocationService {
     return Geolocator.getPositionStream(locationSettings: settings);
   }
 
-  /// Distancia entre dos puntos en metros.
+  /// Distancia entre dos puntos en metros (helper para el panel).
   double distanceBetween(double lat1, double lon1, double lat2, double lon2) =>
       Geolocator.distanceBetween(lat1, lon1, lat2, lon2);
 }

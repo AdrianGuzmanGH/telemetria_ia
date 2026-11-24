@@ -1,95 +1,83 @@
-import '../models/telemetry_point.dart';
-import '../models/classification_result.dart';
+import '../models/vehicle.dart';
 
-abstract class AiClassifier {
-  Future<void> load();
-  ClassificationResult classify(List<TelemetryPoint> window);
-  void dispose();
-}
+class AiClassifier {
+  // Devuelve un texto con el estado general
+  String evaluateRisk(double speedKmh, Vehicle vehicle) {
+    if (speedKmh < 5) return 'Vehículo Detenido / Seguro';
 
-class HeuristicClassifier implements AiClassifier {
-  /// Si la precisión es peor que esto (metros), la muestra es basura.
-  static const double _badAccuracy = 30;
+    int riskPoints = _calculateRiskPoints(vehicle);
+    bool isSpeeding = speedKmh > 80;
+    bool isReckless = speedKmh > 120;
 
-  /// Velocidad mínima promedio para considerarse en movimiento (km/h).
-  static const double _minMovingKmh = 3;
+    if (isReckless && riskPoints >= 3) return '¡PELIGRO CRÍTICO! Exceso de velocidad y vehículo en mal estado.';
+    if (isReckless) return '¡ALTO RIESGO! Conducción temeraria.';
+    if (isSpeeding && riskPoints >= 2) return 'Advertencia: Exceso de velocidad + Fallas mecánicas.';
+    if (isSpeeding) return 'Advertencia: Exceso de velocidad.';
+    if (riskPoints >= 4) return 'Alerta: Vehículo requiere mantenimiento URGENTE.';
+    if (riskPoints >= 2) return 'Aviso: Mantenimiento preventivo recomendado.';
 
-  @override
-  Future<void> load() async {
-    await Future.delayed(const Duration(milliseconds: 200));
+    return 'Normal - Conducción y vehículo en buen estado.';
   }
 
-  @override
-  ClassificationResult classify(List<TelemetryPoint> window) {
-    if (window.isEmpty) return ClassificationResult.unknown;
+  // Devuelve una lista de alertas específicas para el Centro de Alertas
+  List<String> getSpecificAlerts(Vehicle vehicle) {
+    List<String> alerts = [];
+    int currentYear = DateTime.now().year;
 
-    final current = window.last;
-
-    // 1) Si la precisión es pésima, no podemos confiar.
-    if (current.accuracy > _badAccuracy) {
-      return const ClassificationResult(
-        state: DrivingState.unknown,
-        riskScore: 0,
-        label: 'Señal débil',
-      );
+    // 1. Alerta de Frenos (si tiene más de 2 años)
+    if (_getYearsPassed(vehicle.brakeChangeDate, currentYear) >= 2) {
+      alerts.add('🛑 Frenos desgastados (Cambio en ${vehicle.brakeChangeDate}).');
+    }
+    // 2. Alerta de Aceite (si tiene más de 1 año)
+    if (_getYearsPassed(vehicle.oilChangeDate, currentYear) >= 1) {
+      alerts.add('🛢️ Aceite vencido (Cambio en ${vehicle.oilChangeDate}).');
+    }
+    // 3. Alerta de Llantas
+    if (vehicle.tireCondition == 'Malo') {
+      alerts.add('🛞 Llantas en MAL estado. Riesgo de reventón.');
+    } else if (vehicle.tireCondition == 'Regular') {
+      alerts.add('🛞 Llantas regulares. Revisar presión.');
+    }
+    // 4. Alerta de Revisión Técnica
+    if (_getYearsPassed(vehicle.technicalReviewDate, currentYear) >= 1) {
+      alerts.add('📋 Revisión técnico-mecánica vencida.');
+    }
+    // 5. Alerta de Kilometraje
+    int kms = int.tryParse(vehicle.mileage) ?? 0;
+    if (kms > 100000) {
+      alerts.add('⚠️ Kilometraje muy alto ($kms km). Motor desgastado.');
+    }
+    // 6. Alerta de Motor
+    if (_getYearsPassed(vehicle.engineChangeDate, currentYear) >= 5) {
+      alerts.add('⚙️ Motor sin mantenimiento mayor en más de 5 años.');
     }
 
-    // 2) Exceso de velocidad → anomalía clara.
-    if (current.speedKmh > 100) {
-      final score = (current.speedKmh / 160).clamp(0.0, 1.0);
-      return ClassificationResult(
-        state: DrivingState.anomaly,
-        riskScore: score,
-        label: 'Exceso de velocidad',
-      );
-    }
-
-    // 3) Promedio móvil de las últimas 3 muestras para filtrar ruido.
-    final recent = window.length >= 3
-        ? window.sublist(window.length - 3)
-        : window;
-    final avgSpeed =
-        recent.map((p) => p.speedKmh).reduce((a, b) => a + b) /
-            recent.length;
-
-    // 4) Si el promedio es bajo, está detenido (aunque haya ruido).
-    if (avgSpeed < _minMovingKmh) {
-      return const ClassificationResult(
-        state: DrivingState.stopped,
-        riskScore: 0.05,
-        label: 'Detenido',
-      );
-    }
-
-    // 5) Aceleración estimada (últimas dos muestras).
-    double accel = 0;
-    if (window.length >= 2) {
-      final prev = window[window.length - 2];
-      final dt =
-          current.timestamp.difference(prev.timestamp).inMilliseconds /
-              1000.0;
-      if (dt > 0) accel = (current.speed - prev.speed) / dt;
-    }
-    final accelAbs = accel.abs();
-
-    final speedScore = (current.speedKmh / 120).clamp(0.0, 1.0);
-    final accelScore = (accelAbs / 5.0).clamp(0.0, 1.0);
-    final score = (speedScore * 0.4 + accelScore * 0.6).clamp(0.0, 1.0);
-
-    if (score > 0.65) {
-      return ClassificationResult(
-        state: DrivingState.anomaly,
-        riskScore: score,
-        label: 'Conducción agresiva',
-      );
-    }
-    return ClassificationResult(
-      state: DrivingState.normal,
-      riskScore: score,
-      label: 'Normal',
-    );
+    if (alerts.isEmpty) alerts.add('✅ Vehículo sin alertas pendientes.');
+    return alerts;
   }
 
-  @override
-  void dispose() {}
+  int _calculateRiskPoints(Vehicle vehicle) {
+    int points = 0;
+    int currentYear = DateTime.now().year;
+    
+    if (_getYearsPassed(vehicle.brakeChangeDate, currentYear) >= 2) points += 2;
+    if (_getYearsPassed(vehicle.oilChangeDate, currentYear) >= 1) points += 1;
+    if (vehicle.tireCondition == 'Malo') points += 2;
+    if (vehicle.tireCondition == 'Regular') points += 1;
+    if (_getYearsPassed(vehicle.technicalReviewDate, currentYear) >= 1) points += 2;
+    if ((int.tryParse(vehicle.mileage) ?? 0) > 100000) points += 2;
+    if (_getYearsPassed(vehicle.engineChangeDate, currentYear) >= 5) points += 1;
+
+    return points;
+  }
+
+  int _getYearsPassed(String dateString, int currentYear) {
+    try {
+      final parts = dateString.split('-');
+      if (parts.length < 3) return 0;
+      return currentYear - int.parse(parts[0]);
+    } catch (e) {
+      return 0;
+    }
+  }
 }

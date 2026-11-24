@@ -1,17 +1,24 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
-import 'package:flutter_map_vector_tiles/flutter_map_vector_tiles.dart' as vt;
-import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-
-import '../models/telemetry_point.dart';
-import '../models/classification_result.dart';
-import '../services/location_service.dart';
+import '../models/vehicle.dart';
+import '../services/database_service.dart';
 import '../services/ai_classifier.dart';
-import '../services/simulation_service.dart';
-import '../services/settings_service.dart';
-import '../widgets/telemetry_panel.dart';
+import 'alerts_screen.dart';
+
+class SimulatedCar {
+  final Vehicle vehicle;
+  double speed;
+  String aiResult;
+  LatLng position;
+  double angle;
+  List<LatLng> routeHistory;
+  Color alertColor;
+
+  SimulatedCar({required this.vehicle, this.speed = 0, this.aiResult = 'Detenido', required this.position, this.angle = 0, List<LatLng>? routeHistory, this.alertColor = Colors.grey}) : routeHistory = routeHistory ?? [];
+}
 
 class SimulationScreen extends StatefulWidget {
   const SimulationScreen({super.key});
@@ -21,387 +28,163 @@ class SimulationScreen extends StatefulWidget {
 }
 
 class _SimulationScreenState extends State<SimulationScreen> {
-  static const int _maxPoints = 500;
-  static const _defaultCenter = LatLng(4.6533, -74.0836);
-
+  final DatabaseService _db = DatabaseService();
+  final AiClassifier _ai = AiClassifier();
   final MapController _mapController = MapController();
-  final LocationService _locationService = LocationService();
-  final AiClassifier _classifier = HeuristicClassifier();
-  final SimulationService _simService = SimulationService();
-  final SettingsService _settings = SettingsService();
-
-  StreamSubscription<Position>? _sub;
-  final List<TelemetryPoint> _points = [];
-  ClassificationResult _result = ClassificationResult.unknown;
-
-  bool _running = false;
-  bool _aggressive = false;
-  double _speed = 30;
-  double _radius = 30;
-  double _totalDistance = 0;
-  int _tick = 0;
-
-  // Para el estilo vectorial de OpenFreeMap
-  vt.Style? _style;
-  bool _styleLoaded = false;
+  
+  List<Vehicle> _allVehicles = [];
+  List<SimulatedCar> _activeCars = [];
+  Timer? _simulationTimer;
+  bool _isSimulating = false;
+  final LatLng _center = const LatLng(4.6533, -74.0836);
 
   @override
   void initState() {
     super.initState();
-    _classifier.load();
-    _loadSettings();
-    _loadMapStyle();
+    _loadVehicles();
   }
 
-  Future<void> _loadMapStyle() async {
-    final style = await vt.StyleReader(
-      uri: 'https://tiles.openfreemap.org/styles/liberty',
-    ).read();
-    if (mounted) {
-      setState(() {
-        _style = style;
-        _styleLoaded = true;
+  void _loadVehicles() async {
+    final user = await _db.getCurrentUser();
+    if (user != null) {
+      final vehicles = await _db.getUserVehicles(user.username);
+      setState(() => _allVehicles = vehicles);
+    }
+  }
+
+  void _toggleVehicle(Vehicle v) {
+    setState(() {
+      final index = _activeCars.indexWhere((c) => c.vehicle.id == v.id);
+      if (index != -1) {
+        _activeCars.removeAt(index);
+      } else {
+        final random = Random();
+        final startAngle = random.nextDouble() * 2 * pi;
+        final startRadius = 0.001 + random.nextDouble() * 0.002;
+        final startPos = LatLng(_center.latitude + cos(startAngle) * startRadius, _center.longitude + sin(startAngle) * startRadius);
+        _activeCars.add(SimulatedCar(vehicle: v, position: startPos, angle: startAngle, routeHistory: [startPos]));
+      }
+    });
+  }
+
+  void _toggleSimulation() {
+    if (_isSimulating) {
+      _simulationTimer?.cancel();
+      setState(() => _isSimulating = false);
+    } else {
+      if (_activeCars.isEmpty) return;
+      setState(() => _isSimulating = true);
+      _simulationTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+        setState(() {
+          for (var car in _activeCars) {
+            if (car.speed > 0) {
+              car.angle += (Random().nextDouble() - 0.5) * 0.4; 
+              final moveDistance = (car.speed / 3600) * 0.0004; 
+              final newPos = LatLng(car.position.latitude + cos(car.angle) * moveDistance, car.position.longitude + sin(car.angle) * moveDistance);
+              car.position = newPos;
+              car.routeHistory.add(newPos); 
+              if (car.routeHistory.length > 80) car.routeHistory.removeAt(0);
+            }
+            car.aiResult = _ai.evaluateRisk(car.speed, car.vehicle);
+            
+            if (car.aiResult.contains('CRÍTICO') || car.aiResult.contains('URGENTE')) car.alertColor = Colors.red;
+            else if (car.aiResult.contains('Advertencia') || car.aiResult.contains('ALTO RIESGO') || car.aiResult.contains('Aviso')) car.alertColor = Colors.orange;
+            else if (car.speed > 10) car.alertColor = Colors.green;
+            else car.alertColor = Colors.grey;
+          }
+        });
       });
     }
   }
 
   @override
   void dispose() {
-    _sub?.cancel();
-    _classifier.dispose();
-    _simService.dispose();
+    _simulationTimer?.cancel();
     super.dispose();
   }
-
-  Future<void> _loadSettings() async {
-    final speed = await _settings.loadSpeed();
-    final radius = await _settings.loadRadius();
-    if (!mounted) return;
-    setState(() {
-      _speed = speed;
-      _radius = radius;
-    });
-  }
-
-  Future<void> _saveSettings() async {
-    await _settings.saveSpeed(_speed);
-    await _settings.saveRadius(_radius);
-  }
-
-  void _start() {
-    _points.clear();
-    _totalDistance = 0;
-    _result = ClassificationResult.unknown;
-    _tick = 0;
-    _aggressive = false;
-
-    _simService.start(
-      baseLat: _defaultCenter.latitude,
-      baseLng: _defaultCenter.longitude,
-      radius: _radius,
-    );
-    _simService.setSpeed(_speed);
-
-    _sub = _simService.stream.listen(_onPosition);
-
-    setState(() => _running = true);
-  }
-
-  void _stop() {
-    _sub?.cancel();
-    _sub = null;
-    _simService.stop();
-    setState(() {
-      _running = false;
-      _aggressive = false;
-    });
-    _saveSettings();
-  }
-
-  void _toggleAggressive() {
-    if (_aggressive) {
-      _simService.stopAggressive();
-      setState(() => _aggressive = false);
-    } else {
-      _simService.startAggressive();
-      setState(() => _aggressive = true);
-    }
-  }
-
-  void _onPosition(Position pos) {
-    final point = TelemetryPoint.fromPosition(pos);
-
-    if (_points.isNotEmpty) {
-      final prev = _points.last;
-      _totalDistance += _locationService.distanceBetween(
-        prev.latitude,
-        prev.longitude,
-        point.latitude,
-        point.longitude,
-      );
-    }
-
-    _points.add(point);
-    if (_points.length > _maxPoints) _points.removeAt(0);
-
-    final result = _classifier.classify(_points);
-
-    _tick++;
-    setState(() {
-      _result = result;
-    });
-
-    if (_tick % 3 == 0) {
-      _mapController.move(point.latLng, _mapController.camera.zoom);
-    }
-  }
-
-  List<Marker> get _markers => _points.isEmpty
-      ? []
-      : [
-          Marker(
-            point: _points.last.latLng,
-            width: 50,
-            height: 50,
-            child: const Icon(Icons.location_on, color: Colors.red, size: 40),
-          ),
-        ];
-
-  List<Polyline> get _polylines => _points.length < 2
-      ? []
-      : [
-          Polyline(
-            points: _points.map((p) => p.latLng).toList(),
-            color: Colors.indigoAccent,
-            strokeWidth: 5,
-          ),
-        ];
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(_running ? 'Simulación en curso' : 'Configurar simulación'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () {
-            if (_running) _stop();
-            Navigator.of(context).pop();
-          },
-        ),
+        title: const Text('Simulación IA'),
+        backgroundColor: Colors.blueGrey.shade900, foregroundColor: Colors.white,
+        actions: [
+          IconButton(icon: Icon(_isSimulating ? Icons.pause_circle : Icons.play_circle, size: 32, color: _isSimulating ? Colors.red : Colors.green), onPressed: _toggleSimulation),
+        ],
       ),
-      body: _running ? _buildRunning() : _buildConfig(),
-    );
-  }
-
-  Widget _buildConfig() {
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const SizedBox(height: 8),
-            const Text(
-              'Ajusta los parámetros de la simulación',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Los valores se guardan automáticamente para tu próxima sesión.',
-              style: TextStyle(fontSize: 13, color: Colors.black54),
-            ),
-            const SizedBox(height: 20),
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      body: Column(
+        children: [
+          Expanded(
+            flex: 65,
+            child: Stack(
+              children: [
+                FlutterMap(
+                  mapController: _mapController,
+                  options: MapOptions(initialCenter: _center, initialZoom: 15),
                   children: [
-                    Text(
-                      'Velocidad: ${_speed.toStringAsFixed(0)} km/h',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Slider(
-                      value: _speed.clamp(0, 160),
-                      min: 0,
-                      max: 160,
-                      divisions: 32,
-                      label: '${_speed.toStringAsFixed(0)} km/h',
-                      onChanged: (v) => setState(() => _speed = v),
-                      onChangeEnd: (_) => _saveSettings(),
-                    ),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        _preset('🛑 Detenido', 0),
-                        _preset('🚗 Ciudad', 30),
-                        _preset('🛣️ Carretera', 80),
-                        _preset('⚡ Acelerón', 110),
-                      ],
-                    ),
+                    TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'com.example.telemetria_ia'),
+                    PolylineLayer(polylines: _activeCars.map((car) => Polyline(points: car.routeHistory, color: car.alertColor.withOpacity(0.7), strokeWidth: 5.0)).toList()),
+                    MarkerLayer(markers: _activeCars.map((car) => Marker(point: car.position, width: 45, height: 45, child: Icon(Icons.directions_car, color: car.alertColor, size: 45))).toList()),
                   ],
                 ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Radio del recorrido: ${_radius.toStringAsFixed(0)} m',
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Slider(
-                      value: _radius.clamp(10, 200),
-                      min: 10,
-                      max: 200,
-                      divisions: 19,
-                      label: '${_radius.toStringAsFixed(0)} m',
-                      onChanged: (v) => setState(() => _radius = v),
-                      onChangeEnd: (_) => _saveSettings(),
-                    ),
-                    const Text(
-                      'Un radio mayor hace que el recorrido sea más amplio y visible en el mapa.',
-                      style: TextStyle(fontSize: 12, color: Colors.black54),
-                    ),
-                  ],
+                Positioned(
+                  top: 10, left: 10,
+                  child: Card(color: Colors.black87, child: Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6), child: Text(_isSimulating ? 'En vivo' : 'Pausado', style: TextStyle(color: _isSimulating ? Colors.greenAccent : Colors.white, fontSize: 12)))),
                 ),
-              ),
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: _start,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Iniciar simulación'),
-              style: FilledButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 14),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _preset(String label, double value) {
-    return OutlinedButton(
-      onPressed: () {
-        setState(() => _speed = value);
-        _saveSettings();
-      },
-      child: Text(label, style: const TextStyle(fontSize: 12)),
-    );
-  }
-
-  Widget _buildRunning() {
-    final initial =
-        _points.isNotEmpty ? _points.last.latLng : _defaultCenter;
-
-    return Stack(
-      children: [
-        if (_styleLoaded && _style != null)
-          FlutterMap(
-            mapController: _mapController,
-            options: MapOptions(
-              initialCenter: initial,
-              initialZoom: 17,
-              maxZoom: 21,
-            ),
-            children: [
-              vt.VectorTileLayer(
-                theme: _style!.theme,
-                tileProviders: _style!.providers,
-                rasterSources: _style!.rasterSources,
-                sprites: _style!.sprites,
-              ),
-              PolylineLayer(polylines: _polylines),
-              MarkerLayer(markers: _markers),
-            ],
-          )
-        else
-          const Center(child: CircularProgressIndicator()),
-
-        Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-            child: TelemetryPanel(
-              current: _points.isEmpty ? null : _points.last,
-              result: _result,
-              totalDistanceMeters: _totalDistance,
-              samples: _points.length,
-              tracking: true,
-              onToggle: _stop,
-              compact: true,
+                Positioned(
+                  top: 10, right: 10,
+                  child: FloatingActionButton.small(
+                    heroTag: 'btnAlertas',
+                    backgroundColor: Colors.redAccent,
+                    onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const AlertsScreen())),
+                    child: const Icon(Icons.notifications_active, color: Colors.white, size: 20),
+                  ),
+                ),
+              ],
             ),
           ),
-        ),
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: 0,
-          child: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: _buildBottomBar(),
+          Expanded(
+            flex: 35,
+            child: Container(
+              color: Colors.grey.shade100,
+              child: _allVehicles.isEmpty 
+                ? const Center(child: Text('No tienes vehículos registrados.'))
+                : Column(
+                    children: [
+                      Container(padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 10), color: Colors.blueGrey.shade800, child: const Row(children: [Icon(Icons.tune, color: Colors.white, size: 16), SizedBox(width: 6), Text('Controles de Flota', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 12))])),
+                      Expanded(
+                        child: ListView.builder(
+                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                          itemCount: _allVehicles.length,
+                          itemBuilder: (context, index) {
+                            final v = _allVehicles[index];
+                            final activeCar = _activeCars.firstWhere((c) => c.vehicle.id == v.id, orElse: () => SimulatedCar(vehicle: v, position: LatLng(0,0)));
+                            final isSelected = _activeCars.any((c) => c.vehicle.id == v.id);
+
+                            return Card(
+                              margin: const EdgeInsets.only(bottom: 4),
+                              child: ListTile(
+                                dense: true,
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                                leading: SizedBox(width: 30, child: Checkbox(value: isSelected, onChanged: (val) => _toggleVehicle(v))),
+                                title: Text('${v.brand} ${v.model}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+                                subtitle: isSelected 
+                                  ? Text(activeCar.aiResult, style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: activeCar.alertColor), maxLines: 1, overflow: TextOverflow.ellipsis)
+                                  : const Text('Inactivo', style: TextStyle(fontSize: 9)),
+                                trailing: isSelected
+                                  ? SizedBox(width: 100, child: Slider(value: activeCar.speed, min: 0, max: 160, divisions: 16, activeColor: activeCar.alertColor, label: '${activeCar.speed.toStringAsFixed(0)}', onChanged: (val) => setState(() => activeCar.speed = val)))
+                                  : null,
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
             ),
           ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildBottomBar() {
-    return Card(
-      elevation: 6,
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            TextButton.icon(
-              onPressed: _stop,
-              icon: const Icon(Icons.stop,
-                  color: Colors.redAccent, size: 20),
-              label: const Text(
-                'Detener',
-                style: TextStyle(
-                    color: Colors.redAccent,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600),
-              ),
-            ),
-            Container(width: 1, height: 22, color: Colors.grey.shade300),
-            TextButton.icon(
-              onPressed: _toggleAggressive,
-              icon: Icon(
-                _aggressive ? Icons.bolt : Icons.bolt_outlined,
-                color: _aggressive ? Colors.orange : Colors.indigo,
-                size: 20,
-              ),
-              label: Text(
-                _aggressive ? 'Agresivo ON' : 'Agresivo',
-                style: TextStyle(
-                  color: _aggressive ? Colors.orange : Colors.indigo,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-          ],
-        ),
+        ],
       ),
     );
   }

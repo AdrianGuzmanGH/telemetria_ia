@@ -34,9 +34,4 @@ class TelemetryPoint {
   LatLng get latLng => LatLng(latitude, longitude);
 
   double get speedKmh => speed * 3.6;
-
-  @override
-  String toString() =>
-      'TP(${latitude.toStringAsFixed(5)}, ${longitude.toStringAsFixed(5)}, '
-      '${speedKmh.toStringAsFixed(1)} km/h)';
 }

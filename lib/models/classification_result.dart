@@ -1,9 +1,8 @@
-/// Estado inferido por el clasificador de IA.
 enum DrivingState { unknown, stopped, normal, anomaly }
 
 class ClassificationResult {
   final DrivingState state;
-  final double riskScore; // 0.0 - 1.0
+  final double riskScore;
   final String label;
 
   const ClassificationResult({
